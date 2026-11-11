@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>야외 실험 가능 시간</title>
+<style>
+  :root { --bg:#f7f8fa; --card:#fff; --ink:#1d2330; --muted:#667085; --line:#e4e7ec;
+          --wind:#2563eb; --gust:#f97316; --ok:#16a34a; --okbg:#dcfce7; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font-family: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; line-height:1.5; }
+  main { max-width:960px; margin:0 auto; padding:20px 16px 40px; }
+  h1 { font-size:1.3rem; margin:0 0 4px; }
+  .sub { color:var(--muted); font-size:.9rem; margin:0 0 16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:16px; }
+  .hero .label { color:var(--muted); font-size:.9rem; }
+  .hero .big { font-size:1.8rem; font-weight:700; color:var(--ok); margin:4px 0; }
+  .hero .big.none { color:var(--muted); }
+  .sliders { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; }
+  .sliders label { display:block; font-size:.9rem; }
+  .sliders output { font-weight:700; }
+  input[type=range] { width:100%; }
+  svg { width:100%; height:auto; display:block; }
+  .legend { display:flex; gap:16px; flex-wrap:wrap; font-size:.85rem; color:var(--muted); margin-top:6px; }
+  .legend i { display:inline-block; width:14px; height:10px; margin-right:4px; vertical-align:middle; border-radius:2px; }
+  .tablewrap { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; font-size:.9rem; }
+  th, td { padding:6px 8px; border-bottom:1px solid var(--line); text-align:right; white-space:nowrap; }
+  th:first-child, td:first-child { text-align:left; }
+  tr.ok td { background:var(--okbg); color:#14532d; }
+  .err { color:#b42318; font-weight:700; }
+  footer { color:var(--muted); font-size:.85rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>야외 실험 가능 시간 찾기</h1>
+  <p class="sub">한국항공대 지점(위도 37.600, 경도 126.865) · 7일 시간별 예보</p>
+
+  <section class="card hero" id="hero">
+    <div class="label">기준에 맞는 가장 긴 연속 시간대</div>
+    <div class="big" id="best">불러오는 중…</div>
+    <div class="label" id="bestDetail"></div>
+  </section>
+
+  <section class="card">
+    <div class="sliders">
+      <label>풍속 상한 (km/h 미만): <output id="vWind">10</output>
+        <input type="range" id="sWind" min="1" max="40" step="1" value="10"></label>
+      <label>돌풍 상한 (km/h 미만): <output id="vGust">20</output>
+        <input type="range" id="sGust" min="1" max="60" step="1" value="20"></label>
+      <label>강수 상한 (mm 이하): <output id="vRain">0</output>
+        <input type="range" id="sRain" min="0" max="5" step="0.1" value="0"></label>
+    </div>
+  </section>
+
+  <section class="card">
+    <strong>7일 풍속·돌풍 (km/h)</strong>
+    <div id="chart"></div>
+    <div class="legend">
+      <span><i style="background:var(--wind)"></i>풍속</span>
+      <span><i style="background:var(--gust)"></i>돌풍</span>
+      <span><i style="background:var(--okbg);border:1px solid var(--ok)"></i>가능 시간</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <strong id="firstDayTitle">첫날 24시간</strong>
+    <div id="firstDayCount" class="sub" style="margin:4px 0 8px"></div>
+    <div class="tablewrap"><table id="table"></table></div>
+  </section>
+
+  <footer class="card">
+    <div>단위: 풍속·돌풍 km/h(지상 10 m), 강수 mm/h · 시간대 Asia/Seoul</div>
+    <div>데이터 받은 시각: <span id="fetched">-</span> · 출처: <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a></div>
+    <div>예보값이라 실제와 다를 수 있어요. 가능 기준은 연습용이에요</div>
+  </footer>
+</main>
+
+<script>
+const URL_API = "https://api.open-meteo.com/v1/forecast?latitude=37.600&longitude=126.865" +
+  "&hourly=wind_speed_10m,wind_gusts_10m,precipitation&forecast_days=7&timezone=Asia%2FSeoul";
+let data = null;
+const $ = id => document.getElementById(id);
+
+function crit() {
+  return { wind:+$("sWind").value, gust:+$("sGust").value, rain:+$("sRain").value };
+}
+function isOk(i, c) {
+  const h = data.hourly;
+  const w = h.wind_speed_10m[i], g = h.wind_gusts_10m[i], p = h.precipitation[i];
+  if (w == null || g == null || p == null) return false;
+  return w < c.wind && g < c.gust && p <= c.rain;
+}
+function fmt(t) { // "2026-11-11T14:00" -> "11/11 14시"
+  const [d, hm] = t.split("T"); const [, m, dd] = d.split("-");
+  return `${+m}/${+dd} ${hm.slice(0,2)}시`;
+}
+
+function render() {
+  const c = crit();
+  $("vWind").textContent = c.wind; $("vGust").textContent = c.gust; $("vRain").textContent = c.rain.toFixed(1);
+  if (!data) return;
+  const h = data.hourly, n = h.time.length;
+  const ok = Array.from({length:n}, (_, i) => isOk(i, c));
+
+  // longest run
+  let best = [-1, 0], s = -1;
+  for (let i = 0; i <= n; i++) {
+    if (i < n && ok[i]) { if (s < 0) s = i; }
+    else if (s >= 0) { if (i - s > best[1]) best = [s, i - s]; s = -1; }
+  }
+  if (best[1] > 0) {
+    const endIdx = best[0] + best[1] - 1;
+    $("best").className = "big";
+    $("best").textContent = `${fmt(h.time[best[0]])} ~ ${fmt(h.time[endIdx]).split(" ")[1].replace("시","")}:59 (${best[1]}시간)`;
+    $("bestDetail").textContent = `전체 7일 중 가능 시간 합계 ${ok.filter(Boolean).length}시간`;
+  } else {
+    $("best").className = "big none";
+    $("best").textContent = "기준에 맞는 시간이 없어요";
+    $("bestDetail").textContent = "슬라이더로 기준을 넓혀 보세요";
+  }
+
+  // chart
+  const W = 900, H = 260, L = 36, R = 8, T = 10, B = 28;
+  const maxY = Math.max(10, ...h.wind_gusts_10m.filter(v => v != null)) * 1.1;
+  const x = i => L + (W - L - R) * i / (n - 1);
+  const y = v => T + (H - T - B) * (1 - v / maxY);
+  const bw = (W - L - R) / (n - 1);
+  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="7일 풍속과 돌풍 그래프">`;
+  ok.forEach((v, i) => { if (v) svg += `<rect x="${x(i) - bw/2}" y="${T}" width="${bw}" height="${H - T - B}" fill="#dcfce7"/>`; });
+  for (let t = 0; t <= maxY; t += maxY > 50 ? 20 : 10) {
+    svg += `<line x1="${L}" x2="${W - R}" y1="${y(t)}" y2="${y(t)}" stroke="#e4e7ec"/>` +
+           `<text x="${L - 4}" y="${y(t) + 4}" font-size="11" text-anchor="end" fill="#667085">${t}</text>`;
+  }
+  h.time.forEach((t, i) => { if (t.endsWith("T00:00")) {
+    svg += `<line x1="${x(i)}" x2="${x(i)}" y1="${T}" y2="${H - B}" stroke="#d0d5dd" stroke-dasharray="3 3"/>` +
+           `<text x="${x(i) + 3}" y="${H - 10}" font-size="11" fill="#667085">${fmt(t).split(" ")[0]}</text>`; }});
+  const line = (arr, col) => `<polyline fill="none" stroke="${col}" stroke-width="1.8" points="${
+      arr.map((v, i) => v == null ? "" : `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ")}"/>`;
+  svg += line(h.wind_gusts_10m, "#f97316") + line(h.wind_speed_10m, "#2563eb") + "</svg>";
+  $("chart").innerHTML = svg;
+
+  // first-day table
+  const day = h.time[0].slice(0, 10);
+  const idx = h.time.map((t, i) => t.startsWith(day) ? i : -1).filter(i => i >= 0);
+  $("firstDayTitle").textContent = `첫날(${fmt(h.time[0]).split(" ")[0]}) 24시간`;
+  $("firstDayCount").textContent = `첫날 가능 시간: ${idx.filter(i => ok[i]).length}시간`;
+  let tb = "<thead><tr><th>시각</th><th>풍속 km/h</th><th>돌풍 km/h</th><th>강수 mm</th><th>가능 여부</th></tr></thead><tbody>";
+  idx.forEach(i => {
+    tb += `<tr class="${ok[i] ? "ok" : ""}"><td>${h.time[i].slice(11)}</td><td>${h.wind_speed_10m[i] ?? "-"}</td>` +
+          `<td>${h.wind_gusts_10m[i] ?? "-"}</td><td>${h.precipitation[i] ?? "-"}</td><td>${ok[i] ? "가능" : "불가"}</td></tr>`;
+  });
+  $("table").innerHTML = tb + "</tbody>";
+}
+
+function fail() {
+  $("best").className = "big none err";
+  $("best").textContent = "데이터를 받지 못했어요";
+  $("bestDetail").textContent = "인터넷 연결을 확인하고 새로고침해 보세요";
+  $("chart").innerHTML = '<p class="err">데이터를 받지 못했어요</p>';
+  $("table").innerHTML = "";
+}
+
+["sWind", "sGust", "sRain"].forEach(id => $(id).addEventListener("input", render));
+render();
+fetch(URL_API)
+  .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+  .then(j => {
+    if (!j.hourly || !j.hourly.time || !j.hourly.time.length) throw new Error("empty");
+    data = j;
+    $("fetched").textContent = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
+    render();
+  })
+  .catch(fail);
+</script>
+</body>
+</html>
